@@ -373,7 +373,7 @@ LRESULT CALLBACK MainWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM
     case WM_NCCREATE: {
         const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lParam);
         SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
-        return TRUE;
+        return DefWindowProcW(window, message, wParam, lParam);
     }
     case WM_CREATE: {
         state = reinterpret_cast<AppState*>(GetWindowLongPtrW(window, GWLP_USERDATA));

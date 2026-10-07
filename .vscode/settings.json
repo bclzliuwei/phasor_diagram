@@ -1,0 +1,6 @@
+{
+    "cmake.sourceDirectory": "${workspaceFolder}/source",
+    "cmake.buildDirectory": "${workspaceFolder}/build",
+    "cmake.buildType": "Release",
+    "cmake.generator": "Visual Studio 17 2022"
+}

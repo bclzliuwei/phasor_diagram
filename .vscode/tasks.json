@@ -1,0 +1,23 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build PhasorDiagram Release",
+			"type": "shell",
+			"command": "cmake",
+			"args": [
+				"--build",
+				"C:/WL/Workarea/phasor_diagram/build",
+				"--config",
+				"Release",
+				"--target",
+				"PhasorDiagram"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
+		}
+	]
+}
