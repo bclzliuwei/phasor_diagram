@@ -21,7 +21,10 @@ constexpr int kMagnitudeBaseId = 100;
 constexpr int kAngleBaseId = 110;
 constexpr int kPhaseBaseId = 120;
 constexpr int kRotationInputId = 130;
+constexpr int kCyclesInputId = 131;
 constexpr int kBalanceButtonId = 9;
+constexpr int kWaveformCheckboxId = 10;
+constexpr int kCyclesLabelId = 11;
 
 const std::array<const wchar_t*, kPhaseCount> kPhaseNames = {L"A", L"B", L"C"};
 const std::array<COLORREF, kPhaseCount> kPhaseColors = {
@@ -39,12 +42,15 @@ struct AppState {
     std::array<HWND, kPhaseCount> magnitudeInputs{};
     std::array<HWND, kPhaseCount> angleInputs{};
     HWND rotationInput = nullptr;
+    HWND cyclesInput = nullptr;
     HWND status = nullptr;
     HWND plot = nullptr;
     HFONT titleFont = nullptr;
     std::array<Phasor, kPhaseCount> phasors{};
     double rotationDegrees = 0.0;
+    int waveformCycles = 2;
     bool inputsValid = true;
+    bool showWaveforms = false;
 };
 
 HFONT CreateUiFont(int height, int weight)
@@ -145,14 +151,25 @@ void UpdateInputs(AppState& state)
         return;
     }
 
+    double waveformCycles = state.waveformCycles;
+    if (state.showWaveforms &&
+        (!ReadNumber(state.cyclesInput, waveformCycles) || waveformCycles < 1.0 || waveformCycles > 100.0 ||
+            std::floor(waveformCycles) != waveformCycles)) {
+        state.inputsValid = false;
+        SetWindowTextW(state.status, L"Cycles must be a whole number from 1 to 100.");
+        InvalidateRect(state.plot, nullptr, TRUE);
+        return;
+    }
+
     state.phasors = updated;
     state.rotationDegrees = rotationDegrees;
+    state.waveformCycles = static_cast<int>(waveformCycles);
     state.inputsValid = true;
     const bool allZero = std::all_of(updated.begin(), updated.end(), [](const Phasor& phasor) {
         return phasor.magnitude == 0.0;
     });
     SetWindowTextW(state.status, allZero
-        ? L"Enter a non-zero magnitude to display the vectors."
+        ? L"Enter a non-zero magnitude to display the phases."
         : L"Plot updates as the phase values change.");
     InvalidateRect(state.plot, nullptr, TRUE);
 }
@@ -232,12 +249,10 @@ void DrawArrow(HDC dc, const POINT& center, const POINT& tip, COLORREF color)
     RestoreDC(dc, saved);
 }
 
-void PaintPlot(HWND window, HDC dc, const AppState& state)
+void PaintPhasors(HWND window, HDC dc, const AppState& state)
 {
     RECT bounds{};
     GetClientRect(window, &bounds);
-    FillRect(dc, &bounds, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-    SetBkMode(dc, TRANSPARENT);
 
     const int width = bounds.right - bounds.left;
     const int height = bounds.bottom - bounds.top;
@@ -313,6 +328,104 @@ void PaintPlot(HWND window, HDC dc, const AppState& state)
     }
 }
 
+void PaintWaveforms(HWND window, HDC dc, const AppState& state)
+{
+    RECT bounds{};
+    GetClientRect(window, &bounds);
+    const int left = 80;
+    const int right = bounds.right - 24;
+    const int top = 54;
+    const int bottom = bounds.bottom - 58;
+    if (right <= left || bottom <= top) {
+        return;
+    }
+
+    const int centerY = (top + bottom) / 2;
+    const double radius = (bottom - top) / 2.0;
+    const int angleSpan = state.waveformCycles * 360;
+    const double maximum = state.inputsValid
+        ? std::max({state.phasors[0].magnitude, state.phasors[1].magnitude, state.phasors[2].magnitude})
+        : 0.0;
+    const double scaleMaximum = NiceScaleMaximum(maximum);
+    const COLORREF labelColor = RGB(89, 102, 108);
+    DrawText(dc, L"Amplitude", 6, 12, labelColor);
+    for (int index = 0; index < kPhaseCount; ++index) {
+        DrawText(dc, std::wstring(L"Phase ") + kPhaseNames[index],
+            left + (right - left) * index / kPhaseCount, 12, kPhaseColors[index]);
+    }
+
+    const int saved = SaveDC(dc);
+    HPEN gridPen = CreatePen(PS_SOLID, 1, RGB(222, 228, 230));
+    HPEN axisPen = CreatePen(PS_SOLID, 1, RGB(139, 151, 156));
+    HGDIOBJ oldPen = SelectObject(dc, gridPen);
+    for (int tick = -2; tick <= 2; ++tick) {
+        const int positionY = centerY - static_cast<int>(radius * tick / 2.0);
+        MoveToEx(dc, left, positionY, nullptr);
+        LineTo(dc, right, positionY);
+        std::wostringstream label;
+        label << std::setprecision(4) << std::defaultfloat << scaleMaximum * tick / 2.0;
+        DrawText(dc, label.str(), 6, positionY - 8, labelColor);
+    }
+    for (int tick = 0; tick <= 6; ++tick) {
+        const int positionX = left + (right - left) * tick / 6;
+        MoveToEx(dc, positionX, top, nullptr);
+        LineTo(dc, positionX, bottom);
+        const std::wstring label = std::to_wstring(tick * angleSpan / 6);
+        SIZE textSize{};
+        GetTextExtentPoint32W(dc, label.c_str(), static_cast<int>(label.size()), &textSize);
+        DrawText(dc, label, positionX - textSize.cx / 2, bottom + 8, labelColor);
+    }
+    SelectObject(dc, axisPen);
+    MoveToEx(dc, left, centerY, nullptr);
+    LineTo(dc, right, centerY);
+    MoveToEx(dc, left, top, nullptr);
+    LineTo(dc, left, bottom);
+    const std::wstring axisLabel = L"Electrical angle (deg)";
+    SIZE axisLabelSize{};
+    GetTextExtentPoint32W(dc, axisLabel.c_str(), static_cast<int>(axisLabel.size()), &axisLabelSize);
+    DrawText(dc, axisLabel, left + (right - left - axisLabelSize.cx) / 2, bottom + 32, labelColor);
+    SelectObject(dc, oldPen);
+    DeleteObject(gridPen);
+    DeleteObject(axisPen);
+
+    if (state.inputsValid) {
+        IntersectClipRect(dc, left, top, right + 1, bottom + 1);
+        for (int index = 0; index < kPhaseCount; ++index) {
+            const Phasor& phasor = state.phasors[index];
+            const double phaseAngle = std::remainder(phasor.angleDegrees + state.rotationDegrees, 360.0);
+            HPEN phasePen = CreatePen(PS_SOLID, 2, kPhaseColors[index]);
+            SelectObject(dc, phasePen);
+            for (int positionX = left; positionX <= right; ++positionX) {
+                const double cycleAngle = static_cast<double>(angleSpan) * (positionX - left) / (right - left);
+                const double radians = (cycleAngle + phaseAngle) * 3.14159265358979323846 / 180.0;
+                const int positionY = centerY - static_cast<int>(
+                    phasor.magnitude / scaleMaximum * radius * std::cos(radians));
+                if (positionX == left) {
+                    MoveToEx(dc, positionX, positionY, nullptr);
+                } else {
+                    LineTo(dc, positionX, positionY);
+                }
+            }
+            SelectObject(dc, oldPen);
+            DeleteObject(phasePen);
+        }
+    }
+    RestoreDC(dc, saved);
+}
+
+void PaintPlot(HWND window, HDC dc, const AppState& state)
+{
+    RECT bounds{};
+    GetClientRect(window, &bounds);
+    FillRect(dc, &bounds, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+    SetBkMode(dc, TRANSPARENT);
+    if (state.showWaveforms) {
+        PaintWaveforms(window, dc, state);
+    } else {
+        PaintPhasors(window, dc, state);
+    }
+}
+
 LRESULT CALLBACK PlotWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message) {
@@ -356,9 +469,12 @@ void LayoutControls(HWND window, AppState& state)
         MoveWindow(state.angleInputs[index], 212, y, 120, 32, TRUE);
     }
 
-    MoveWindow(GetDlgItem(window, 8), 24, 372, 260, 22, TRUE);
+    MoveWindow(GetDlgItem(window, 8), 24, 372, 160, 22, TRUE);
     MoveWindow(state.rotationInput, 24, 398, 140, 32, TRUE);
+    MoveWindow(GetDlgItem(window, kCyclesLabelId), 190, 372, 142, 22, TRUE);
+    MoveWindow(state.cyclesInput, 190, 398, 142, 32, TRUE);
     MoveWindow(GetDlgItem(window, kBalanceButtonId), 24, 436, 150, 32, TRUE);
+    MoveWindow(GetDlgItem(window, kWaveformCheckboxId), 190, 436, 142, 32, TRUE);
     MoveWindow(state.status, 24, 474, 310, 36, TRUE);
     const int plotLeft = 360;
     const int plotTop = 100;
@@ -379,7 +495,7 @@ LRESULT CALLBACK MainWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM
         state = reinterpret_cast<AppState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
         HWND title = CreateLabel(window, L"THREE-PHASE PHASOR DIAGRAM", 1);
         SetControlFont(title, state->titleFont);
-        CreateLabel(window, L"Vector angle = phase angle + rotation (degrees, positive counterclockwise).", 2);
+        CreateLabel(window, L"PHASOR VIEW", 2);
         CreateLabel(window, L"PHASE INPUTS", 3);
         CreateLabel(window, L"PHASE", 4);
         CreateLabel(window, L"MAGNITUDE", 5);
@@ -391,9 +507,17 @@ LRESULT CALLBACK MainWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM
             state->magnitudeInputs[index] = CreateInput(window, kMagnitudeBaseId + index, L"100");
             state->angleInputs[index] = CreateInput(window, kAngleBaseId + index, initialAngles[index]);
         }
-        CreateLabel(window, L"DIAGRAM ROTATION (deg)", 8);
+        CreateLabel(window, L"ROTATION (deg)", 8);
         state->rotationInput = CreateInput(window, kRotationInputId);
+        HWND cyclesLabel = CreateLabel(window, L"WAVEFORM CYCLES", kCyclesLabelId);
+        state->cyclesInput = CreateInput(window, kCyclesInputId, L"2");
+        EnableWindow(cyclesLabel, FALSE);
+        EnableWindow(state->cyclesInput, FALSE);
         HWND balanceButton = CreateButton(window, kBalanceButtonId, L"Balance Phases");
+        HWND waveformCheckbox = CreateWindowExW(
+            0, L"BUTTON", L"Waveforms", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+            0, 0, 0, 0, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kWaveformCheckboxId)),
+            GetModuleHandleW(nullptr), nullptr);
         state->status = CreateLabel(window, L"Enter phase values to display the vectors.", 7);
         state->plot = CreateWindowExW(
             0, kPlotClass, L"", WS_CHILD | WS_VISIBLE,
@@ -404,7 +528,9 @@ LRESULT CALLBACK MainWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM
             SetControlFont(state->angleInputs[index], static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
         }
         SetControlFont(state->rotationInput, static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
+        SetControlFont(state->cyclesInput, static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
         SetControlFont(balanceButton, static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
+        SetControlFont(waveformCheckbox, static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
         LayoutControls(window, *state);
         UpdateInputs(*state);
         return 0;
@@ -418,6 +544,14 @@ LRESULT CALLBACK MainWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM
         if (state != nullptr) {
             if (LOWORD(wParam) == kBalanceButtonId && HIWORD(wParam) == BN_CLICKED) {
                 ApplyBalancedPhases(*state);
+            } else if (LOWORD(wParam) == kWaveformCheckboxId && HIWORD(wParam) == BN_CLICKED) {
+                state->showWaveforms = SendDlgItemMessageW(window, kWaveformCheckboxId, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                SetWindowTextW(GetDlgItem(window, 1), state->showWaveforms
+                    ? L"THREE-PHASE WAVEFORMS" : L"THREE-PHASE PHASOR DIAGRAM");
+                SetWindowTextW(GetDlgItem(window, 2), state->showWaveforms ? L"WAVEFORM VIEW" : L"PHASOR VIEW");
+                EnableWindow(state->cyclesInput, state->showWaveforms);
+                EnableWindow(GetDlgItem(window, kCyclesLabelId), state->showWaveforms);
+                UpdateInputs(*state);
             } else if (HIWORD(wParam) == EN_CHANGE) {
                 UpdateInputs(*state);
             }
