@@ -63,10 +63,10 @@ HWND CreateLabel(HWND parent, const wchar_t* text, int controlId, DWORD style = 
         GetModuleHandleW(nullptr), nullptr);
 }
 
-HWND CreateInput(HWND parent, int controlId)
+HWND CreateInput(HWND parent, int controlId, const wchar_t* text = L"0")
 {
     return CreateWindowExW(
-        WS_EX_CLIENTEDGE, L"EDIT", L"0", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_RIGHT,
+    WS_EX_CLIENTEDGE, L"EDIT", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_RIGHT,
         0, 0, 0, 0, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(controlId)),
         GetModuleHandleW(nullptr), nullptr);
 }
@@ -385,10 +385,11 @@ LRESULT CALLBACK MainWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM
         CreateLabel(window, L"MAGNITUDE", 5);
         CreateLabel(window, L"ANGLE (deg)", 6);
 
+        const std::array<const wchar_t*, kPhaseCount> initialAngles = {L"0", L"-120", L"120"};
         for (int index = 0; index < kPhaseCount; ++index) {
             CreateLabel(window, kPhaseNames[index], kPhaseBaseId + index);
-            state->magnitudeInputs[index] = CreateInput(window, kMagnitudeBaseId + index);
-            state->angleInputs[index] = CreateInput(window, kAngleBaseId + index);
+            state->magnitudeInputs[index] = CreateInput(window, kMagnitudeBaseId + index, L"100");
+            state->angleInputs[index] = CreateInput(window, kAngleBaseId + index, initialAngles[index]);
         }
         CreateLabel(window, L"DIAGRAM ROTATION (deg)", 8);
         state->rotationInput = CreateInput(window, kRotationInputId);
