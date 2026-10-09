@@ -18,6 +18,22 @@
 				"$msCompile"
 			],
 			"group": "build"
+		},
+		{
+			"label": "Install PhasorDiagram Release",
+			"type": "shell",
+			"command": "cmake",
+			"args": [
+				"--install",
+				"C:/WL/Workarea/phasor_diagram/build",
+				"--config",
+				"Release"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
 		}
 	]
 }
