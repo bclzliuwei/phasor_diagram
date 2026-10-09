@@ -25,12 +25,19 @@ constexpr int kCyclesInputId = 131;
 constexpr int kBalanceButtonId = 9;
 constexpr int kWaveformCheckboxId = 10;
 constexpr int kCyclesLabelId = 11;
+constexpr int kCursorReadoutId = 12;
+constexpr int kCursorCount = 2;
+constexpr int kCursorHitPixels = 6;
 
 const std::array<const wchar_t*, kPhaseCount> kPhaseNames = {L"A", L"B", L"C"};
 const std::array<COLORREF, kPhaseCount> kPhaseColors = {
     RGB(255, 0, 0),
     RGB(230, 110, 35),
     RGB(0, 0, 255),
+};
+const std::array<COLORREF, kCursorCount> kCursorColors = {
+    RGB(0, 140, 70),
+    RGB(150, 0, 170),
 };
 
 struct Phasor {
@@ -44,6 +51,7 @@ struct AppState {
     HWND rotationInput = nullptr;
     HWND cyclesInput = nullptr;
     HWND status = nullptr;
+    HWND cursorReadout = nullptr;
     HWND plot = nullptr;
     HFONT titleFont = nullptr;
     std::array<Phasor, kPhaseCount> phasors{};
@@ -51,7 +59,32 @@ struct AppState {
     int waveformCycles = 2;
     bool inputsValid = true;
     bool showWaveforms = false;
+    std::array<double, kCursorCount> cursorAngles = {90.0, 210.0};
+    int activeCursor = 0;
+    int draggingCursor = -1;
 };
+
+void UpdateCursorReadout(const AppState& state)
+{
+    if (state.cursorReadout == nullptr) {
+        return;
+    }
+    std::wostringstream text;
+    text << std::fixed << std::setprecision(1);
+    for (int index = 0; index < kCursorCount; ++index) {
+        text << (index == state.activeCursor ? L"> " : L"   ") << L"Line " << index + 1 << L": "
+             << state.cursorAngles[index] << L" deg\n";
+    }
+    text << L"   \u0394 (Line 2 - Line 1): " << state.cursorAngles[1] - state.cursorAngles[0] << L" deg";
+    SetWindowTextW(state.cursorReadout, text.str().c_str());
+}
+
+void SetCursorAngle(AppState& state, int index, double angle)
+{
+    state.cursorAngles[index] = std::clamp(angle, 0.0, state.waveformCycles * 360.0);
+    UpdateCursorReadout(state);
+    InvalidateRect(state.plot, nullptr, FALSE);
+}
 
 HFONT CreateUiFont(int height, int weight)
 {
@@ -164,6 +197,10 @@ void UpdateInputs(AppState& state)
     state.phasors = updated;
     state.rotationDegrees = rotationDegrees;
     state.waveformCycles = static_cast<int>(waveformCycles);
+    for (double& angle : state.cursorAngles) {
+        angle = std::clamp(angle, 0.0, state.waveformCycles * 360.0);
+    }
+    UpdateCursorReadout(state);
     state.inputsValid = true;
     const bool allZero = std::all_of(updated.begin(), updated.end(), [](const Phasor& phasor) {
         return phasor.magnitude == 0.0;
@@ -328,15 +365,35 @@ void PaintPhasors(HWND window, HDC dc, const AppState& state)
     }
 }
 
-void PaintWaveforms(HWND window, HDC dc, const AppState& state)
+bool GetWaveformArea(HWND window, int& left, int& right, int& top, int& bottom)
 {
     RECT bounds{};
     GetClientRect(window, &bounds);
-    const int left = 80;
-    const int right = bounds.right - 24;
-    const int top = 54;
-    const int bottom = bounds.bottom - 58;
-    if (right <= left || bottom <= top) {
+    left = 80;
+    right = bounds.right - 24;
+    top = 54;
+    bottom = bounds.bottom - 58;
+    return right > left && bottom > top;
+}
+
+int AngleToX(double angle, int left, int right, int angleSpan)
+{
+    return left + static_cast<int>(std::lround(angle * (right - left) / angleSpan));
+}
+
+double XToAngle(int positionX, int left, int right, int angleSpan)
+{
+    const double angle = static_cast<double>(angleSpan) * (positionX - left) / (right - left);
+    return std::round(angle * 10.0) / 10.0;
+}
+
+void PaintWaveforms(HWND window, HDC dc, const AppState& state)
+{
+    int left = 0;
+    int right = 0;
+    int top = 0;
+    int bottom = 0;
+    if (!GetWaveformArea(window, left, right, top, bottom)) {
         return;
     }
 
@@ -411,6 +468,30 @@ void PaintWaveforms(HWND window, HDC dc, const AppState& state)
         }
     }
     RestoreDC(dc, saved);
+
+    int previousLabelRight = -1;
+    for (int index = 0; index < kCursorCount; ++index) {
+        const int positionX = AngleToX(state.cursorAngles[index], left, right, angleSpan);
+        const bool active = index == state.activeCursor;
+        HPEN cursorPen = CreatePen(active ? PS_SOLID : PS_DASH, active ? 2 : 1, kCursorColors[index]);
+        HGDIOBJ previousPen = SelectObject(dc, cursorPen);
+        MoveToEx(dc, positionX, top, nullptr);
+        LineTo(dc, positionX, bottom + 1);
+        SelectObject(dc, previousPen);
+        DeleteObject(cursorPen);
+
+        std::wostringstream label;
+        label << L"L" << index + 1 << L" " << std::fixed << std::setprecision(1) << state.cursorAngles[index];
+        const std::wstring text = label.str();
+        SIZE textSize{};
+        GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &textSize);
+        const int labelWidth = static_cast<int>(textSize.cx);
+        const int labelX = std::clamp(positionX - labelWidth / 2, 0, std::max(0, right - labelWidth));
+        // Stagger the second label upward when the two labels would overlap.
+        const bool overlaps = previousLabelRight >= 0 && labelX < previousLabelRight + 4;
+        DrawText(dc, text, labelX, top - 20 - (overlaps ? 16 : 0), kCursorColors[index]);
+        previousLabelRight = labelX + labelWidth;
+    }
 }
 
 void PaintPlot(HWND window, HDC dc, const AppState& state)
@@ -439,10 +520,113 @@ LRESULT CALLBACK PlotWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM
         HDC dc = BeginPaint(window, &paint);
         auto* state = reinterpret_cast<AppState*>(GetWindowLongPtrW(GetParent(window), GWLP_USERDATA));
         if (state != nullptr) {
-            PaintPlot(window, dc, *state);
+            // Double-buffer to avoid flicker while dragging cursors.
+            RECT bounds{};
+            GetClientRect(window, &bounds);
+            HDC memoryDc = CreateCompatibleDC(dc);
+            HBITMAP bitmap = CreateCompatibleBitmap(dc, std::max(1L, bounds.right), std::max(1L, bounds.bottom));
+            HGDIOBJ oldBitmap = SelectObject(memoryDc, bitmap);
+            PaintPlot(window, memoryDc, *state);
+            BitBlt(dc, 0, 0, bounds.right, bounds.bottom, memoryDc, 0, 0, SRCCOPY);
+            SelectObject(memoryDc, oldBitmap);
+            DeleteObject(bitmap);
+            DeleteDC(memoryDc);
         }
         EndPaint(window, &paint);
         return 0;
+    }
+    case WM_LBUTTONDOWN: {
+        auto* state = reinterpret_cast<AppState*>(GetWindowLongPtrW(GetParent(window), GWLP_USERDATA));
+        int left = 0;
+        int right = 0;
+        int top = 0;
+        int bottom = 0;
+        if (state == nullptr || !state->showWaveforms || !GetWaveformArea(window, left, right, top, bottom)) {
+            break;
+        }
+        SetFocus(window);
+        const int angleSpan = state->waveformCycles * 360;
+        const int positionX = static_cast<short>(LOWORD(lParam));
+        int nearest = 0;
+        for (int index = 1; index < kCursorCount; ++index) {
+            if (std::abs(AngleToX(state->cursorAngles[index], left, right, angleSpan) - positionX) <
+                std::abs(AngleToX(state->cursorAngles[nearest], left, right, angleSpan) - positionX)) {
+                nearest = index;
+            }
+        }
+        state->activeCursor = nearest;
+        state->draggingCursor = nearest;
+        SetCapture(window);
+        SetCursorAngle(*state, nearest, XToAngle(positionX, left, right, angleSpan));
+        return 0;
+    }
+    case WM_MOUSEMOVE: {
+        auto* state = reinterpret_cast<AppState*>(GetWindowLongPtrW(GetParent(window), GWLP_USERDATA));
+        int left = 0;
+        int right = 0;
+        int top = 0;
+        int bottom = 0;
+        if (state != nullptr && state->draggingCursor >= 0 && GetWaveformArea(window, left, right, top, bottom)) {
+            SetCursorAngle(*state, state->draggingCursor, XToAngle(
+                static_cast<short>(LOWORD(lParam)), left, right, state->waveformCycles * 360));
+        }
+        return 0;
+    }
+    case WM_LBUTTONUP: {
+        auto* state = reinterpret_cast<AppState*>(GetWindowLongPtrW(GetParent(window), GWLP_USERDATA));
+        if (state != nullptr && state->draggingCursor >= 0) {
+            ReleaseCapture();
+        }
+        return 0;
+    }
+    case WM_CAPTURECHANGED: {
+        auto* state = reinterpret_cast<AppState*>(GetWindowLongPtrW(GetParent(window), GWLP_USERDATA));
+        if (state != nullptr) {
+            state->draggingCursor = -1;
+        }
+        return 0;
+    }
+    case WM_SETCURSOR: {
+        auto* state = reinterpret_cast<AppState*>(GetWindowLongPtrW(GetParent(window), GWLP_USERDATA));
+        int left = 0;
+        int right = 0;
+        int top = 0;
+        int bottom = 0;
+        if (LOWORD(lParam) == HTCLIENT && state != nullptr && state->showWaveforms &&
+            GetWaveformArea(window, left, right, top, bottom)) {
+            POINT point{};
+            GetCursorPos(&point);
+            ScreenToClient(window, &point);
+            bool overCursor = state->draggingCursor >= 0;
+            for (int index = 0; index < kCursorCount && !overCursor; ++index) {
+                overCursor = point.y >= top && point.y <= bottom && std::abs(AngleToX(
+                    state->cursorAngles[index], left, right, state->waveformCycles * 360) - point.x) <= kCursorHitPixels;
+            }
+            if (overCursor) {
+                SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+                return TRUE;
+            }
+        }
+        break;
+    }
+    case WM_KEYDOWN: {
+        auto* state = reinterpret_cast<AppState*>(GetWindowLongPtrW(GetParent(window), GWLP_USERDATA));
+        if (state == nullptr || !state->showWaveforms) {
+            break;
+        }
+        const double step = (GetKeyState(VK_SHIFT) & 0x8000) != 0 ? 10.0 : 1.0;
+        if (wParam == VK_LEFT || wParam == VK_RIGHT) {
+            const int index = state->activeCursor;
+            SetCursorAngle(*state, index, state->cursorAngles[index] + (wParam == VK_LEFT ? -step : step));
+            return 0;
+        }
+        if (wParam == VK_TAB) {
+            state->activeCursor = (state->activeCursor + 1) % kCursorCount;
+            UpdateCursorReadout(*state);
+            InvalidateRect(window, nullptr, FALSE);
+            return 0;
+        }
+        break;
     }
     }
     return DefWindowProcW(window, message, wParam, lParam);
@@ -476,6 +660,7 @@ void LayoutControls(HWND window, AppState& state)
     MoveWindow(GetDlgItem(window, kBalanceButtonId), 24, 436, 150, 32, TRUE);
     MoveWindow(GetDlgItem(window, kWaveformCheckboxId), 190, 436, 142, 32, TRUE);
     MoveWindow(state.status, 24, 474, 310, 36, TRUE);
+    MoveWindow(state.cursorReadout, 24, 516, 310, 60, TRUE);
     const int plotLeft = 360;
     const int plotTop = 100;
     MoveWindow(state.plot, plotLeft, plotTop, std::max(1, clientWidth - plotLeft - 24),
@@ -519,6 +704,8 @@ LRESULT CALLBACK MainWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM
             0, 0, 0, 0, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kWaveformCheckboxId)),
             GetModuleHandleW(nullptr), nullptr);
         state->status = CreateLabel(window, L"Enter phase values to display the vectors.", 7);
+        state->cursorReadout = CreateLabel(window, L"", kCursorReadoutId);
+        ShowWindow(state->cursorReadout, SW_HIDE);
         state->plot = CreateWindowExW(
             0, kPlotClass, L"", WS_CHILD | WS_VISIBLE,
             0, 0, 0, 0, window, nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -551,6 +738,7 @@ LRESULT CALLBACK MainWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM
                 SetWindowTextW(GetDlgItem(window, 2), state->showWaveforms ? L"WAVEFORM VIEW" : L"PHASOR VIEW");
                 EnableWindow(state->cyclesInput, state->showWaveforms);
                 EnableWindow(GetDlgItem(window, kCyclesLabelId), state->showWaveforms);
+                ShowWindow(state->cursorReadout, state->showWaveforms ? SW_SHOW : SW_HIDE);
                 UpdateInputs(*state);
             } else if (HIWORD(wParam) == EN_CHANGE) {
                 UpdateInputs(*state);
@@ -573,7 +761,7 @@ LRESULT CALLBACK MainWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM
     case WM_GETMINMAXINFO: {
         auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
         info->ptMinTrackSize.x = 820;
-        info->ptMinTrackSize.y = 560;
+        info->ptMinTrackSize.y = 640;
         return 0;
     }
     case WM_DESTROY:
